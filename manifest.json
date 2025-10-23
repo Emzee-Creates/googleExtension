@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Research Copilot",
+  "version": "1.0",
+  "description": "Privacy-first research assistant powered by Chrome's built-in AI.",
+  "permissions": [
+    "contextMenus",
+    "scripting",
+    "storage",
+    "notifications"
+  ],
+  "background": {
+    "service_worker": "backend.js"
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}
