@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Research Copilot</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>Research Copilot</h1>
+        <p class="status" id="status">Ready to assist</p>
+      </header>
+
+      <main>
+        <div class="tools">
+          <button class="tool-btn" id="summarize">
+            <span class="icon">📝</span>
+            Summarize
+          </button>
+          <button class="tool-btn" id="translate">
+            <span class="icon">🌐</span>
+            Translate
+          </button>
+          <button class="tool-btn" id="proofread">
+            <span class="icon">✔️</span>
+            Proofread
+          </button>
+          <button class="tool-btn" id="ask">
+            <span class="icon">🤖</span>
+            Ask AI
+          </button>
+        </div>
+
+        <div class="info-box">
+          <p>Select text on any webpage and right-click to use AI tools</p>
+        </div>
+      </main>
+
+      <footer>
+        <div class="models-status">
+          <div class="model" id="summarizer-status">Summarizer: ⌛</div>
+          <div class="model" id="writer-status">Writer: ⌛</div>
+          <div class="model" id="proofreader-status">Proofreader: ⌛</div>
+        </div>
+      </footer>
+    </div>
+    <script src="popup.js"></script>
+  </body>
+</html>
