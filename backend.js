@@ -4,46 +4,84 @@
 const aiSessions = {};
 const MODELS_TO_PRELOAD = ["summarizer", "writer", "proofreader"];
 
+// Add constants at the top
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 1000;
+const MODEL_TIMEOUT = 5000;
+const MAX_TEXT_LENGTH = 5000;
+
 // -------- General Init Function --------
 async function initModel(modelName) {
   if (aiSessions[modelName]) return aiSessions[modelName];
-
-  try {
-    const api = chrome.ai[modelName];
-    if (!api) {
-      console.warn(`❌ API not found for ${modelName}`);
-      return null;
-    }
-
-    let status = await api.availability();
-    console.log(`${modelName} availability:`, status);
-
-    if (status === "downloadable" || status === "downloading") {
-      console.log(`📥 Waiting for ${modelName} to download...`);
-      status = await api.availability();
-    }
-
-    if (status !== "available") {
-      console.warn(`⚠️ ${modelName} not ready (status: ${status})`);
-      return null;
-    }
-
-    const session = await api.create();
-    aiSessions[modelName] = session;
-
-    chrome.notifications.create({
-      type: "basic",
-      iconUrl: "icon128.png",
-      title: "Research Copilot",
-      message: `✅ ${modelName} is ready`
-    });
-
-    console.log(`✅ ${modelName} initialized`);
-    return session;
-  } catch (err) {
-    console.error(`❌ Failed to init ${modelName}:`, err);
+  if (typeof chrome.ai === "undefined") {
+    console.error(
+      "❌ chrome.ai API is not available. Check permissions, Chrome version, and flags."
+    );
     return null;
   }
+  let retries = 0;
+  while (retries < MAX_RETRIES) {
+    try {
+      const api = chrome.ai[modelName];
+      if (!api) {
+        console.warn(`❌ API not found for ${modelName}`);
+        return null;
+      }
+
+      // Add timeout to availability check
+      const statusPromise = api.availability();
+      const status = await Promise.race([
+        statusPromise,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Timeout")), MODEL_TIMEOUT)
+        ),
+      ]);
+
+      if (status === "downloadable" || status === "downloading") {
+        console.log(`📥 Waiting for ${modelName} to download...`);
+        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
+        retries++;
+        continue;
+      }
+
+      if (status !== "available") {
+        console.warn(`⚠️ ${modelName} not ready (status: ${status})`);
+        return null;
+      }
+
+      // Add timeout to create session
+      const sessionPromise = api.create();
+      const session = await Promise.race([
+        sessionPromise,
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error("Session creation timeout")),
+            MODEL_TIMEOUT
+          )
+        ),
+      ]);
+
+      aiSessions[modelName] = session;
+
+      chrome.notifications.create({
+        type: "basic",
+        iconUrl: "icon128.png",
+        title: "Research Copilot",
+        message: `✅ ${modelName} is ready`,
+      });
+
+      console.log(`✅ ${modelName} initialized`);
+      return session;
+    } catch (err) {
+      console.error(`❌ Attempt ${retries + 1} failed for ${modelName}:`, err);
+      if (retries === MAX_RETRIES - 1) {
+        return null;
+      }
+      retries++;
+      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
+    }
+  }
+  return null;
 }
 
 // -------- Preload Models --------
@@ -63,74 +101,144 @@ chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
     id: "summarize",
     title: "Summarize with AI",
-    contexts: ["selection"]
+    contexts: ["selection"],
   });
   chrome.contextMenus.create({
     id: "translate",
     title: "Translate with AI",
-    contexts: ["selection"]
+    contexts: ["selection"],
   });
   chrome.contextMenus.create({
     id: "proofread",
     title: "Proofread with AI",
-    contexts: ["selection"]
+    contexts: ["selection"],
   });
   chrome.contextMenus.create({
     id: "multimodal",
     title: "Ask AI (Text/Image)",
-    contexts: ["selection", "image"]
+    contexts: ["selection", "image"],
   });
 });
 
 // -------- Menu Handling --------
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-  let output = "";
-
-  switch (info.menuItemId) {
-    case "summarize":
-      output = await summarize(info.selectionText);
-      break;
-    case "translate":
-      output = await translate(info.selectionText);
-      break;
-    case "proofread":
-      output = await proofread(info.selectionText);
-      break;
-    case "multimodal":
-      output = await multimodal(info.selectionText, info.srcUrl);
-      break;
+  if (!tab?.id) {
+    console.error("No valid tab found");
+    return;
   }
 
-  if (output) {
-    chrome.tabs.sendMessage(tab.id, { action: "AI_RESULT", data: output });
+  let result;
+
+  try {
+    switch (info.menuItemId) {
+      case "summarize":
+        result = await summarize(info.selectionText);
+        break;
+      case "translate":
+        result = await translate(info.selectionText);
+        break;
+      case "proofread":
+        result = await proofread(info.selectionText);
+        break;
+      case "multimodal":
+        result = await multimodal(info.selectionText, info.srcUrl);
+        break;
+    }
+
+    chrome.tabs
+      .sendMessage(tab.id, {
+        action: "AI_RESULT",
+        data: result,
+      })
+      .catch((err) => {
+        console.error("Failed to send message to tab:", err);
+      });
+  } catch (err) {
+    console.error("Operation failed:", err);
+    chrome.tabs
+      .sendMessage(tab.id, {
+        action: "AI_RESULT",
+        data: { success: false, error: "Operation failed unexpectedly." },
+      })
+      .catch(console.error);
   }
 });
 
+// Helper function for input validation
+function validateInput(text) {
+  if (!text) {
+    return { isValid: false, error: "No text selected." };
+  }
+  if (text.length > MAX_TEXT_LENGTH) {
+    return {
+      isValid: false,
+      error: `Text too long (${text.length} chars). Maximum is ${MAX_TEXT_LENGTH} chars.`,
+    };
+  }
+  return { isValid: true };
+}
+
 // -------- AI Functions --------
 async function summarize(text) {
-  if (!text) return "No text selected.";
-  const summarizer = await initModel("summarizer");
-  if (!summarizer) return "Summarizer not available.";
-  const result = await summarizer.summarize(text);
-  return result?.summaries?.[0]?.text || "No summary available.";
+  const validation = validateInput(text);
+  if (!validation.isValid) return { success: false, error: validation.error };
+
+  try {
+    const summarizer = await initModel("summarizer");
+    if (!summarizer) {
+      console.error("Summarizer model is not available.");
+      return { success: false, error: "Summarizer not available." };
+    }
+
+    const result = await summarizer.summarize(text);
+    if (!result?.summaries?.[0]?.text) {
+      return { success: false, error: "No summary available." };
+    }
+
+    return {
+      success: true,
+      data: result.summaries[0].text,
+    };
+  } catch (err) {
+    console.error("Summarization error:", err);
+    return { success: false, error: "Failed to generate summary." };
+  }
 }
 
 async function translate(text, targetLang = "en") {
-  if (!text) return "No text selected.";
-  const writer = await initModel("writer");
-  if (!writer) return "Writer not available.";
-  const prompt = `Translate this into ${targetLang}: ${text}`;
-  const result = await writer.write(prompt);
-  return result?.output || "Translation failed.";
-}
+  const validation = validateInput(text); // Use your helper!
+  if (!validation.isValid) return { success: false, error: validation.error };
 
+  try {
+    const writer = await initModel("writer");
+    if (!writer) {
+      console.error("Writer model is not available.");
+      return { success: false, error: "Writer model not available." };
+    }
+
+    const prompt = `Translate this into ${targetLang}: ${text}`;
+    const result = await writer.write(prompt);
+
+    if (!result?.output) {
+      return { success: false, error: "Translation failed to generate." };
+    }
+
+    return { success: true, data: result.output };
+  } catch (err) {
+    console.error("Translation error:", err);
+    return { success: false, error: "Failed to generate translation." };
+  }
+}
 async function proofread(text) {
   if (!text) return "No text selected.";
   const proofreader = await initModel("proofreader");
-  if (!proofreader) return "Proofreader not available.";
+  if (!proofreader) {
+    console.error("Proofreader model is not available.");
+    return "Proofreader not available.";
+  }
   const result = await proofreader.proofread(text);
   if (!result?.corrections?.length) return "No issues found.";
-  return result.corrections.map(c => c.replacement).join(" ");
+  return result.corrections.map((c) => c.replacement).join(" ");
 }
 
 async function multimodal(text, imgUrl) {
@@ -145,3 +253,29 @@ async function multimodal(text, imgUrl) {
   }
   return "No valid input provided.";
 }
+
+// Add this near your other message listeners
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === "GET_MODEL_STATUSES") {
+    // Check and send status for each model
+    MODELS_TO_PRELOAD.forEach(async (modelName) => {
+      try {
+        const api = chrome.ai[modelName];
+        if (api) {
+          const status = await api.availability();
+          chrome.runtime.sendMessage({
+            action: "MODEL_STATUS",
+            model: modelName,
+            status: status,
+          });
+        }
+      } catch (err) {
+        chrome.runtime.sendMessage({
+          action: "MODEL_STATUS",
+          model: modelName,
+          status: "error",
+        });
+      }
+    });
+  }
+});
